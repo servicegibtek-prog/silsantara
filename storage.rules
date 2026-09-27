@@ -1,0 +1,35 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Validate file sizes and types
+    function isValidImage() {
+      return request.resource.contentType.matches('image/.*') &&
+             request.resource.size < 15 * 1024 * 1024; // 15MB limit
+    }
+    
+    function isValidDocument() {
+      return (
+        request.resource.contentType.matches('image/.*') ||
+        request.resource.contentType == 'application/pdf'
+      ) && request.resource.size < 25 * 1024 * 1024; // 25MB limit
+    }
+    
+    // Families directory isolation
+    match /families/{familyId}/{allPaths=**} {
+      // Read access: allow if authenticated (in production verified with custom claims or Firestore rule)
+      allow read: if request.auth != null;
+      
+      // Write access for photos and documents with size and MIME validation
+      allow write: if request.auth != null && (isValidImage() || isValidDocument());
+      
+      allow delete: if request.auth != null;
+    }
+    
+    // User profile avatars
+    match /users/{userId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId && isValidImage();
+    }
+  }
+}

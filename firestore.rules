@@ -1,0 +1,144 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function getFamily(familyId) {
+      return get(/databases/$(database)/documents/families/$(familyId)).data;
+    }
+    
+    function getCollaborator(familyId) {
+      return get(/databases/$(database)/documents/families/$(familyId)/collaborators/$(request.auth.uid)).data;
+    }
+    
+    function isFamilyMember(familyId) {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/families/$(familyId)/collaborators/$(request.auth.uid)) ||
+        getFamily(familyId).ownerId == request.auth.uid
+      );
+    }
+    
+    function isFamilyEditorOrAbove(familyId) {
+      return isAuthenticated() && (
+        getFamily(familyId).ownerId == request.auth.uid ||
+        (
+          exists(/databases/$(database)/documents/families/$(familyId)/collaborators/$(request.auth.uid)) &&
+          getCollaborator(familyId).role in ['OWNER', 'ADMIN', 'EDITOR']
+        )
+      );
+    }
+    
+    function isFamilyAdminOrOwner(familyId) {
+      return isAuthenticated() && (
+        getFamily(familyId).ownerId == request.auth.uid ||
+        (
+          exists(/databases/$(database)/documents/families/$(familyId)/collaborators/$(request.auth.uid)) &&
+          getCollaborator(familyId).role in ['OWNER', 'ADMIN']
+        )
+      );
+    }
+    
+    // User profile documents
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Family Spaces
+    match /families/{familyId} {
+      allow read: if isAuthenticated() && (
+        isFamilyMember(familyId) ||
+        resource.data.privacySettings.isPublic == true
+      );
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isFamilyAdminOrOwner(familyId);
+      allow delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+      
+      // Collaborators subcollection
+      match /collaborators/{collabId} {
+        allow read: if isFamilyMember(familyId);
+        allow write: if isFamilyAdminOrOwner(familyId);
+      }
+      
+      // Invitations
+      match /invitations/{inviteId} {
+        allow read: if isAuthenticated();
+        allow write: if isFamilyAdminOrOwner(familyId);
+      }
+    }
+    
+    // Family Members (people)
+    match /familyMembers/{memberId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow create: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+      allow update: if isAuthenticated() && isFamilyEditorOrAbove(resource.data.familyId);
+      allow delete: if isAuthenticated() && isFamilyAdminOrOwner(resource.data.familyId);
+    }
+    
+    // Structured Relationships
+    match /relationships/{relId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow create: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+      allow update: if isAuthenticated() && isFamilyEditorOrAbove(resource.data.familyId);
+      allow delete: if isAuthenticated() && isFamilyAdminOrOwner(resource.data.familyId);
+    }
+    
+    // Family Memories / Stories
+    match /memories/{memoryId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow create: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+      allow update: if isAuthenticated() && (
+        isFamilyAdminOrOwner(resource.data.familyId) ||
+        (isFamilyEditorOrAbove(resource.data.familyId) && resource.data.createdBy == request.auth.uid)
+      );
+      allow delete: if isAuthenticated() && (
+        isFamilyAdminOrOwner(resource.data.familyId) ||
+        (isFamilyEditorOrAbove(resource.data.familyId) && resource.data.createdBy == request.auth.uid)
+      );
+    }
+    
+    // Photos & Albums
+    match /photos/{photoId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow create: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+      allow update: if isAuthenticated() && isFamilyEditorOrAbove(resource.data.familyId);
+      allow delete: if isAuthenticated() && isFamilyAdminOrOwner(resource.data.familyId);
+    }
+    
+    match /albums/{albumId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow write: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+    }
+    
+    // Historical Documents
+    match /documents/{docId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId) && (
+        resource.data.privacyLevel != 'RESTRICTED' || isFamilyAdminOrOwner(resource.data.familyId)
+      );
+      allow create: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+      allow update: if isAuthenticated() && isFamilyAdminOrOwner(resource.data.familyId);
+      allow delete: if isAuthenticated() && isFamilyAdminOrOwner(resource.data.familyId);
+    }
+    
+    // Family Events & Milestones
+    match /events/{eventId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow write: if isAuthenticated() && isFamilyEditorOrAbove(request.resource.data.familyId);
+    }
+    
+    // Audit Activity Logs
+    match /activityLogs/{logId} {
+      allow read: if isAuthenticated() && isFamilyMember(resource.data.familyId);
+      allow create: if isAuthenticated() && isFamilyMember(request.resource.data.familyId);
+      allow update, delete: if false; // Append-only audit trail
+    }
+  }
+}
